@@ -1,4 +1,4 @@
-name: Build Sunstone KSU Kernel
+name: Build Darkmoon 304 KSU Kernel
 
 on:
   workflow_dispatch:
@@ -7,47 +7,51 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 1. 拉取官方 sunstone 内核源码
-        uses: actions/checkout@v4
-        with:
-          repository: MiCode/Xiaomi_Kernel_OpenSource
-          ref: sunstone-u-oss
+      - name: 1. 拉取 Darkmoon 源码（保留提交历史，用于合并）
+        run: |
+          git clone --filter=blob:none --single-branch --branch darkmoon \
+            https://github.com/kamikaonashi/kernel_xiaomi_stone_darkmoon.git kernel
 
-      - name: 2. 安装工具链
+      - name: 2. 合并 OpenELA 5.4.304（内核小版本升级）
+        run: |
+          cd kernel
+          git config user.email "ci@ci.ci"
+          git config user.name "ci"
+          git fetch --filter=blob:none \
+            https://github.com/openela/kernel-lts.git linux-5.4.y:openela-5.4.304
+          git merge openela-5.4.304 -m "Merge OpenELA 5.4.304 into Darkmoon" || {
+            echo "===== 合并冲突的文件（如需自动解决请发我） ====="
+            git diff --name-only --diff-filter=U | head -50
+            echo "===== 冲突列表结束 ====="
+            exit 1
+          }
+          sed -i 's/^EXTRAVERSION = .*/EXTRAVERSION =/' Makefile
+          head -5 Makefile
+
+      - name: 3. 安装工具链
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang lld \
+          sudo apt-get install -y clang lld llvm \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
             flex bison bc libssl-dev cpio
 
-      - name: 3. 集成 KernelSU v0.9.5
+      - name: 4. 生成配置（stone_defconfig + KSU）
         run: |
-          git clone --depth=1 -b v0.9.5 https://github.com/tiann/KernelSU.git KernelSU
-          ln -sf ../KernelSU/kernel drivers/kernelsu
-
-      - name: 4. 生成配置（gki_defconfig + QGKI + KSU，关掉 LTO/CFI 简化编译）
-        run: |
+          cd kernel
           export ARCH=arm64
           export SUBARCH=arm64
           export CC=clang
           export LD=ld.lld
-          export AR=llvm-ar
-          export NM=llvm-nm
-          export OBJCOPY=llvm-objcopy
-          export OBJDUMP=llvm-objdump
-          export STRIP=llvm-strip
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
-
-          make O=out gki_defconfig
-          scripts/kconfig/merge_config.sh -m -O out arch/arm64/configs/vendor/sunstone_QGKI.config
-          ./scripts/config --file out/.config -e KSU -e KPROBES -e KPROBE_EVENTS \
-            -d LTO_CLANG -d LTO_CLANG_THIN -d CFI_CLANG
+          make O=out stone_defconfig
+          ./scripts/config --file out/.config -e KSU -e KPROBES -e KPROBE_EVENTS
           make O=out olddefconfig
 
-      - name: 5. 编译内核
+      - name: 5. 编译内核（失败自动抓错）
         run: |
+          cd kernel
           export ARCH=arm64
           export SUBARCH=arm64
           export CC=clang
@@ -60,12 +64,20 @@ jobs:
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
-          make O=out -j$(nproc) Image
+          set +e
+          make O=out -j$(nproc) Image 2>&1 | tee /tmp/build.log
+          status=${PIPESTATUS[0]}
+          if [ $status -ne 0 ]; then
+            echo ""
+            echo "==================== 真正的报错在这里 ===================="
+            grep -n -i -E "error|undefined|No rule|not found|cannot" /tmp/build.log | tail -40
+            echo "==================== 报错结束 ===================="
+            exit 1
+          fi
+          ls -la out/arch/arm64/boot/Image
 
       - name: 6. 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: sunstone-ksu-Image
-          path: |
-            out/arch/arm64/boot/Image
-            out/arch/arm64/boot/Image.gz
+          name: darkmoon-304-ksu-Image
+          path: kernel/out/arch/arm64/boot/Image
