@@ -1,0 +1,60 @@
+name: Build Sunstone KSU Kernel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 1. 拉取官方 sunstone 内核源码
+        uses: actions/checkout@v4
+        with:
+          repository: MiCode/Xiaomi_Kernel_OpenSource
+          ref: sunstone-u-oss
+
+      - name: 2. 安装工具链
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            flex bison bc libssl-dev cpio
+
+      - name: 3. 集成 KernelSU v0.9.5
+        run: |
+          git clone --depth=1 -b v0.9.5 https://github.com/tiann/KernelSU.git KernelSU
+          ln -sf ../KernelSU/kernel drivers/kernelsu
+
+      - name: 4. 生成配置（gki_defconfig + QGKI + KSU）
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CC=clang
+          export LD=ld.lld
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
+
+          make O=out gki_defconfig
+          scripts/kconfig/merge_config.sh -m -O out arch/arm64/configs/vendor/sunstone_QGKI.config
+          ./scripts/config --file out/.config -e KSU -e KPROBES -e KPROBE_EVENTS
+          make O=out olddefconfig
+
+      - name: 5. 编译内核
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CC=clang
+          export LD=ld.lld
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
+          make O=out -j$(nproc) Image
+
+      - name: 6. 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: sunstone-ksu-Image
+          path: |
+            out/arch/arm64/boot/Image
+            out/arch/arm64/boot/Image.gz
